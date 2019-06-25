@@ -16,11 +16,11 @@ use parking_lot::{RwLock, RwLockReadGuard, RwLockUpgradableReadGuard, RwLockWrit
 pub struct FutureRead<'a, R, T, F, I>
 where
     R: AsRef<RwLock<T>>,
-    F: FnMut(RwLockReadGuard<'_, T>) -> I,
+    F: FnOnce(RwLockReadGuard<'_, T>) -> I,
     I: IntoFuture,
 {
     lock: &'a R,
-    inner: F,
+    inner: Option<F>,
     _contents: PhantomData<T>,
     future: Option<I::Future>,
 }
@@ -28,13 +28,13 @@ where
 impl<'a, R, T, F, I> FutureRead<'a, R, T, F, I>
 where
     R: AsRef<RwLock<T>>,
-    F: FnMut(RwLockReadGuard<'_, T>) -> I,
+    F: FnOnce(RwLockReadGuard<'_, T>) -> I,
     I: IntoFuture,
 {
-    fn new(lock: &'a R, inner: F) -> Self {
+    fn new(lock: &'a R, f: F) -> Self {
         FutureRead {
             lock,
-            inner,
+            inner: Some(f),
             _contents: PhantomData,
             future: None,
         }
@@ -44,7 +44,7 @@ where
 impl<'a, R, T, F, I> Future for FutureRead<'a, R, T, F, I>
 where
     R: AsRef<RwLock<T>>,
-    F: FnMut(RwLockReadGuard<'_, T>) -> I,
+    F: FnOnce(RwLockReadGuard<'_, T>) -> I,
     I: IntoFuture,
 {
     type Item = <<I as IntoFuture>::Future as Future>::Item;
@@ -59,7 +59,7 @@ where
         match self.lock.as_ref().try_read() {
             Some(read_lock) => {
                 // Cache resulting future to avoid executing the inner function again
-                let mut future = (self.inner)(read_lock).into_future();
+                let mut future = (self.inner.take().unwrap())(read_lock).into_future();
                 let res = future.poll();
                 self.future = Some(future);
                 res
@@ -76,11 +76,11 @@ where
 /// Trait to permit FutureRead implementation on wrapped RwLock (not RwLock itself)
 pub trait FutureReadable<R: AsRef<RwLock<T>>, T, I: IntoFuture> {
     /// Takes a closure that will be executed when the Futures gains the read-lock
-    fn future_read<F: FnMut(RwLockReadGuard<'_, T>) -> I>(&self, func: F) -> FutureRead<R, T, F, I>;
+    fn future_read<F: FnOnce(RwLockReadGuard<'_, T>) -> I>(&self, func: F) -> FutureRead<R, T, F, I>;
 }
 
 impl<R: AsRef<RwLock<T>>, T, I: IntoFuture> FutureReadable<R, T, I> for R {
-    fn future_read<F: FnMut(RwLockReadGuard<'_, T>) -> I>(&self, func: F) -> FutureRead<R, T, F, I> {
+    fn future_read<F: FnOnce(RwLockReadGuard<'_, T>) -> I>(&self, func: F) -> FutureRead<R, T, F, I> {
         FutureRead::new(self, func)
     }
 }
@@ -89,11 +89,11 @@ impl<R: AsRef<RwLock<T>>, T, I: IntoFuture> FutureReadable<R, T, I> for R {
 pub struct FutureUpgradableRead<'a, R, T, F, I>
 where
     R: AsRef<RwLock<T>>,
-    F: FnMut(RwLockUpgradableReadGuard<'_, T>) -> I,
+    F: FnOnce(RwLockUpgradableReadGuard<'_, T>) -> I,
     I: IntoFuture,
 {
     lock: &'a R,
-    inner: F,
+    inner: Option<F>,
     _contents: PhantomData<T>,
     future: Option<I::Future>,
 }
@@ -101,13 +101,13 @@ where
 impl<'a, R, T, F, I> FutureUpgradableRead<'a, R, T, F, I>
 where
     R: AsRef<RwLock<T>>,
-    F: FnMut(RwLockUpgradableReadGuard<'_, T>) -> I,
+    F: FnOnce(RwLockUpgradableReadGuard<'_, T>) -> I,
     I: IntoFuture,
 {
-    fn new(lock: &'a R, inner: F) -> Self {
+    fn new(lock: &'a R, f: F) -> Self {
         FutureUpgradableRead {
             lock,
-            inner,
+            inner: Some(f),
             _contents: PhantomData,
             future: None,
         }
@@ -117,7 +117,7 @@ where
 impl<'a, R, T, F, I> Future for FutureUpgradableRead<'a, R, T, F, I>
 where
     R: AsRef<RwLock<T>>,
-    F: FnMut(RwLockUpgradableReadGuard<'_, T>) -> I,
+    F: FnOnce(RwLockUpgradableReadGuard<'_, T>) -> I,
     I: IntoFuture,
 {
     type Item = <<I as IntoFuture>::Future as Future>::Item;
@@ -132,7 +132,7 @@ where
         match self.lock.as_ref().try_upgradable_read() {
             Some(upgradable_lock) => {
                 // Cache resulting future to avoid executing the inner function again
-                let mut future = (self.inner)(upgradable_lock).into_future();
+                let mut future = (self.inner.take().unwrap())(upgradable_lock).into_future();
                 let res = future.poll();
                 self.future = Some(future);
                 res
@@ -149,11 +149,11 @@ where
 /// Trait to permit FutureUpgradableRead implementation on wrapped RwLock (not RwLock itself)
 pub trait FutureUpgradableReadable<R: AsRef<RwLock<T>>, T, I: IntoFuture> {
     /// Takes a closure that will be executed when the Futures gains the upgradable-read-lock
-    fn future_read<F: FnMut(RwLockUpgradableReadGuard<'_, T>) -> I>(&self, func: F) -> FutureUpgradableRead<R, T, F, I>;
+    fn future_read<F: FnOnce(RwLockUpgradableReadGuard<'_, T>) -> I>(&self, func: F) -> FutureUpgradableRead<R, T, F, I>;
 }
 
 impl<R: AsRef<RwLock<T>>, T, I: IntoFuture> FutureUpgradableReadable<R, T, I> for R {
-    fn future_read<F: FnMut(RwLockUpgradableReadGuard<'_, T>) -> I>(&self, func: F) -> FutureUpgradableRead<R, T, F, I> {
+    fn future_read<F: FnOnce(RwLockUpgradableReadGuard<'_, T>) -> I>(&self, func: F) -> FutureUpgradableRead<R, T, F, I> {
         FutureUpgradableRead::new(self, func)
     }
 }
@@ -162,11 +162,11 @@ impl<R: AsRef<RwLock<T>>, T, I: IntoFuture> FutureUpgradableReadable<R, T, I> fo
 pub struct FutureWrite<'a, R, T, F, I>
 where
     R: AsRef<RwLock<T>>,
-    F: FnMut(RwLockWriteGuard<'_, T>) -> I,
+    F: FnOnce(RwLockWriteGuard<'_, T>) -> I,
     I: IntoFuture,
 {
     lock: &'a R,
-    inner: F,
+    inner: Option<F>,
     _contents: PhantomData<T>,
     future: Option<I::Future>,
 }
@@ -174,13 +174,13 @@ where
 impl<'a, R, T, F, I> FutureWrite<'a, R, T, F, I>
 where
     R: AsRef<RwLock<T>>,
-    F: FnMut(RwLockWriteGuard<'_, T>) -> I,
+    F: FnOnce(RwLockWriteGuard<'_, T>) -> I,
     I: IntoFuture,
 {
-    fn new(lock: &'a R, inner: F) -> Self {
+    fn new(lock: &'a R, f: F) -> Self {
         FutureWrite {
             lock,
-            inner,
+            inner: Some(f),
             _contents: PhantomData,
             future: None,
         }
@@ -190,7 +190,7 @@ where
 impl<'a, R, T, F, I> Future for FutureWrite<'a, R, T, F, I>
 where
     R: AsRef<RwLock<T>>,
-    F: FnMut(RwLockWriteGuard<'_, T>) -> I,
+    F: FnOnce(RwLockWriteGuard<'_, T>) -> I,
     I: IntoFuture,
 {
     type Item = <<I as IntoFuture>::Future as Future>::Item;
@@ -205,7 +205,7 @@ where
         match self.lock.as_ref().try_write() {
             Some(write_lock) => {
                 // Cache resulting future to avoid executing the inner function again
-                let mut future = (self.inner)(write_lock).into_future();
+                let mut future = (self.inner.take().unwrap())(write_lock).into_future();
                 let res = future.poll();
                 self.future = Some(future);
                 res
@@ -222,11 +222,11 @@ where
 /// Trait to permit FutureWrite implementation on wrapped RwLock (not RwLock itself)
 pub trait FutureWriteable<R: AsRef<RwLock<T>>, T, I: IntoFuture> {
     /// Takes a closure that will be executed when the Futures gains the write-lock
-    fn future_write<F: FnMut(RwLockWriteGuard<'_, T>) -> I>(&self, func: F) -> FutureWrite<R, T, F, I>;
+    fn future_write<F: FnOnce(RwLockWriteGuard<'_, T>) -> I>(&self, func: F) -> FutureWrite<R, T, F, I>;
 }
 
 impl<R: AsRef<RwLock<T>>, T, I: IntoFuture> FutureWriteable<R, T, I> for R {
-    fn future_write<F: FnMut(RwLockWriteGuard<'_, T>) -> I>(&self, func: F) -> FutureWrite<R, T, F, I> {
+    fn future_write<F: FnOnce(RwLockWriteGuard<'_, T>) -> I>(&self, func: F) -> FutureWrite<R, T, F, I> {
         FutureWrite::new(self, func)
     }
 }
