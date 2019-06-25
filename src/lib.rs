@@ -8,7 +8,7 @@
 use std::convert::AsRef;
 use std::marker::PhantomData;
 
-use tokio::prelude::{Async, future::{Future, IntoFuture}};
+use tokio::prelude::{Async, future::{Future, IntoFuture}, task};
 
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -20,9 +20,9 @@ where
     I: IntoFuture,
 {
     lock: &'a R,
-    func: F,
+    inner: F,
     _contents: PhantomData<T>,
-    _future: PhantomData<I>,
+    future: Option<I::Future>,
 }
 
 impl<'a, R, T, F, I> FutureRead<'a, R, T, F, I>
@@ -31,12 +31,12 @@ where
     F: FnMut(RwLockReadGuard<'_, T>) -> I,
     I: IntoFuture,
 {
-    fn new(lock: &'a R, func: F) -> Self {
+    fn new(lock: &'a R, inner: F) -> Self {
         FutureRead {
             lock,
-            func,
+            inner,
             _contents: PhantomData,
-            _future: PhantomData,
+            future: None,
         }
     }
 }
@@ -47,13 +47,28 @@ where
     F: FnMut(RwLockReadGuard<'_, T>) -> I,
     I: IntoFuture,
 {
-    type Item = <<I as IntoFuture>::Future as Future>::Item;
-    type Error = <<I as IntoFuture>::Future as Future>::Error;
+    type Item = I::Item;
+    type Error = I::Error;
 
     fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
+        if let Some(ref mut future) = self.future {
+            // Use cached future
+            return future.poll();
+        }
+
         match self.lock.as_ref().try_read() {
-            Some(read_lock) => (self.func)(read_lock).into_future().poll(),
-            None => Ok(Async::NotReady),
+            Some(read_lock) => {
+                // Cache resulting future to avoid executing the inner function again
+                let mut future = (self.inner)(read_lock).into_future();
+                let res = future.poll();
+                self.future = Some(future);
+                res
+            },
+            None => {
+                // Notify current Task we can be polled again
+                task::current().notify();
+                Ok(Async::NotReady)
+            },
         }
     }
 }
@@ -78,9 +93,9 @@ where
     I: IntoFuture,
 {
     lock: &'a R,
-    func: F,
+    inner: F,
     _contents: PhantomData<T>,
-    _future: PhantomData<I>,
+    future: Option<I::Future>,
 }
 
 impl<'a, R, T, F, I> FutureWrite<'a, R, T, F, I>
@@ -89,12 +104,12 @@ where
     F: FnMut(RwLockWriteGuard<'_, T>) -> I,
     I: IntoFuture,
 {
-    fn new(lock: &'a R, func: F) -> Self {
+    fn new(lock: &'a R, inner: F) -> Self {
         FutureWrite {
             lock,
-            func,
+            inner,
             _contents: PhantomData,
-            _future: PhantomData,
+            future: None,
         }
     }
 }
@@ -109,9 +124,24 @@ where
     type Error = <<I as IntoFuture>::Future as Future>::Error;
 
     fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
+        if let Some(ref mut future) = self.future {
+            // Use cached future
+            return future.poll();
+        }
+
         match self.lock.as_ref().try_write() {
-            Some(write_lock) => (self.func)(write_lock).into_future().poll(),
-            None => Ok(Async::NotReady),
+            Some(write_lock) => {
+                // Cache resulting future to avoid executing the inner function again
+                let mut future = (self.inner)(write_lock).into_future();
+                let res = future.poll();
+                self.future = Some(future);
+                res
+            },
+            None => {
+                // Notify current Task we can be polled again
+                task::current().notify();
+                Ok(Async::NotReady)
+            },
         }
     }
 }
@@ -134,6 +164,7 @@ mod tests {
     use std::rc::Rc;
 
     use tokio::runtime::current_thread;
+    use tokio::prelude::{Future, future::lazy};
 
     use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -143,18 +174,20 @@ mod tests {
 
     lazy_static! {
         static ref LOCK: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
+        static ref CONCURRENT_LOCK: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
     }
 
     #[test]
     fn current_thread_lazy_static() {
         current_thread::block_on_all(LOCK.future_write(|mut v: RwLockWriteGuard<'_, Vec<String>>| {
             v.push(String::from("It works!"));
-            LOCK.future_read(|v: RwLockReadGuard<'_, Vec<String>>| -> Result<(), ()> {
+            Ok(())
+        })
+        .and_then(|_| LOCK.future_read(|v: RwLockReadGuard<'_, Vec<String>>| -> Result<(), ()> {
                 // since we are using the same lazy_static as multithread_lazy_static
                 assert!((v.len() == 1 && v[0] == "It works!") || (v.len() == 2 && v[0] == "It works!" && v[1] == "It works!"));
                 Ok(())
-            })
-        })).unwrap();
+        }))).unwrap();
     }
 
     #[test]
@@ -162,11 +195,12 @@ mod tests {
         let lock = Arc::new(RwLock::new(Vec::new()));
         current_thread::block_on_all(lock.future_write(|mut v: RwLockWriteGuard<'_, Vec<String>>| {
             v.push(String::from("It works!"));
-            lock.future_read(|v: RwLockReadGuard<'_, Vec<String>>| -> Result<(), ()> {
+            Ok(())
+        })
+        .and_then(|_| lock.future_read(|v: RwLockReadGuard<'_, Vec<String>>| -> Result<(), ()> {
                 assert!(v.len() == 1 && v[0] == "It works!");
                 Ok(())
-            })
-        })).unwrap();
+        }))).unwrap();
     }
 
     #[test]
@@ -174,11 +208,12 @@ mod tests {
         let lock = Rc::new(RwLock::new(Vec::new()));
         current_thread::block_on_all(lock.future_write(|mut v: RwLockWriteGuard<'_, Vec<String>>| {
             v.push(String::from("It works!"));
-            lock.future_read(|v: RwLockReadGuard<'_, Vec<String>>| -> Result<(), ()> {
+            Ok(())
+        })
+        .and_then(|_| lock.future_read(|v: RwLockReadGuard<'_, Vec<String>>| -> Result<(), ()> {
                 assert!(v.len() == 1 && v[0] == "It works!");
                 Ok(())
-            })
-        })).unwrap();
+        }))).unwrap();
     }
 
     #[test]
@@ -186,23 +221,25 @@ mod tests {
         let lock = Box::new(RwLock::new(Vec::new()));
         current_thread::block_on_all(lock.future_write(|mut v: RwLockWriteGuard<'_, Vec<String>>| {
             v.push(String::from("It works!"));
-            lock.future_read(|v: RwLockReadGuard<'_, Vec<String>>| -> Result<(), ()> {
+            Ok(())
+        })
+        .and_then(|_| lock.future_read(|v: RwLockReadGuard<'_, Vec<String>>| -> Result<(), ()> {
                 assert!(v.len() == 1 && v[0] == "It works!");
                 Ok(())
-            })
-        })).unwrap();
+        }))).unwrap();
     }
 
     #[test]
     fn multithread_lazy_static() {
         tokio::run(LOCK.future_write(|mut v: RwLockWriteGuard<'_, Vec<String>>| {
             v.push(String::from("It works!"));
-            LOCK.future_read(|v: RwLockReadGuard<'_, Vec<String>>| -> Result<(), ()> {
-                // Since we are using the same lazy_static as current_thread_lazy_static
+            Ok(())
+        })
+        .and_then(|_| LOCK.future_read(|v: RwLockReadGuard<'_, Vec<String>>| -> Result<(), ()> {
+                // since we are using the same lazy_static as multithread_lazy_static
                 assert!((v.len() == 1 && v[0] == "It works!") || (v.len() == 2 && v[0] == "It works!" && v[1] == "It works!"));
                 Ok(())
-            })
-        }));
+        })));
     }
 
     // Implies a lifetime problem
@@ -243,4 +280,23 @@ mod tests {
     //         })
     //     }));
     // }
+
+    #[test]
+    fn multithread_concurrent_lazy_static() {
+        tokio::run(lazy(|| {
+            // spawn 10 concurrent futures
+            for i in 0..100 {
+                tokio::spawn(CONCURRENT_LOCK.future_write(move |mut v: RwLockWriteGuard<'_, Vec<String>>| {
+                    v.push(format!("{}", i));
+                    CONCURRENT_LOCK.future_read(|v: RwLockReadGuard<'_, Vec<String>>| -> Result<(), ()> {
+                        println!("{:?}", v);
+                        Ok(())
+                    })
+                }));
+            }
+            Ok(())
+        }));
+        let singleton = CONCURRENT_LOCK.read();
+        assert_eq!(singleton.len(), 100);
+    }
 }
