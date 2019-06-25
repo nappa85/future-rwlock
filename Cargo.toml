@@ -7,4 +7,6 @@ edition = "2018"
 [dependencies]
 tokio = "0.1"
 parking_lot = "0.8"
+
+[dev-dependencies]
 lazy_static = "1.3"
