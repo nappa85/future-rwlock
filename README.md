@@ -1,6 +1,6 @@
 # Future-RwLock
 
-This is an "as simple as possible" Future implementatio fon [parking_lot::RwLock](https://docs.rs/parking_lot/0.8.0/parking_lot/type.RwLock.html).
+This is an "as simple as possible" Future implementation for [parking_lot::RwLock](https://docs.rs/parking_lot/0.8.0/parking_lot/type.RwLock.html).
 It works on `AsRef<RwLock<T>>` instead of directly on `RwLock<T>` for borrowing reasons (RwLock must not live inside the Future, it would be dropped with it).
 
 Example:
