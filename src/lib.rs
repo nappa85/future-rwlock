@@ -47,8 +47,8 @@ where
     F: FnMut(RwLockReadGuard<'_, T>) -> I,
     I: IntoFuture,
 {
-    type Item = I::Item;
-    type Error = I::Error;
+    type Item = <<I as IntoFuture>::Future as Future>::Item;
+    type Error = <<I as IntoFuture>::Future as Future>::Error;
 
     fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
         if let Some(ref mut future) = self.future {
