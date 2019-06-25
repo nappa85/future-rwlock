@@ -85,7 +85,7 @@ impl<R: AsRef<RwLock<T>>, T, I: IntoFuture> FutureReadable<R, T, I> for R {
     }
 }
 
-/// Wrapper to read from RwLock in Future-style
+/// Wrapper to upgradable-read from RwLock in Future-style
 pub struct FutureUpgradableRead<'a, R, T, F, I>
 where
     R: AsRef<RwLock<T>>,
@@ -148,7 +148,7 @@ where
 
 /// Trait to permit FutureUpgradableRead implementation on wrapped RwLock (not RwLock itself)
 pub trait FutureUpgradableReadable<R: AsRef<RwLock<T>>, T, I: IntoFuture> {
-    /// Takes a closure that will be executed when the Futures gains the read-lock
+    /// Takes a closure that will be executed when the Futures gains the upgradable-read-lock
     fn future_read<F: FnMut(RwLockUpgradableReadGuard<'_, T>) -> I>(&self, func: F) -> FutureUpgradableRead<R, T, F, I>;
 }
 
