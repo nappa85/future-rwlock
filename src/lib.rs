@@ -10,7 +10,7 @@ use std::marker::PhantomData;
 
 use tokio::prelude::{Async, future::{Future, IntoFuture}, task};
 
-use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use parking_lot::{RwLock, RwLockReadGuard, RwLockUpgradableReadGuard, RwLockWriteGuard};
 
 /// Wrapper to read from RwLock in Future-style
 pub struct FutureRead<'a, R, T, F, I>
@@ -82,6 +82,79 @@ pub trait FutureReadable<R: AsRef<RwLock<T>>, T, I: IntoFuture> {
 impl<R: AsRef<RwLock<T>>, T, I: IntoFuture> FutureReadable<R, T, I> for R {
     fn future_read<F: FnMut(RwLockReadGuard<'_, T>) -> I>(&self, func: F) -> FutureRead<R, T, F, I> {
         FutureRead::new(self, func)
+    }
+}
+
+/// Wrapper to read from RwLock in Future-style
+pub struct FutureUpgradableRead<'a, R, T, F, I>
+where
+    R: AsRef<RwLock<T>>,
+    F: FnMut(RwLockUpgradableReadGuard<'_, T>) -> I,
+    I: IntoFuture,
+{
+    lock: &'a R,
+    inner: F,
+    _contents: PhantomData<T>,
+    future: Option<I::Future>,
+}
+
+impl<'a, R, T, F, I> FutureUpgradableRead<'a, R, T, F, I>
+where
+    R: AsRef<RwLock<T>>,
+    F: FnMut(RwLockUpgradableReadGuard<'_, T>) -> I,
+    I: IntoFuture,
+{
+    fn new(lock: &'a R, inner: F) -> Self {
+        FutureUpgradableRead {
+            lock,
+            inner,
+            _contents: PhantomData,
+            future: None,
+        }
+    }
+}
+
+impl<'a, R, T, F, I> Future for FutureUpgradableRead<'a, R, T, F, I>
+where
+    R: AsRef<RwLock<T>>,
+    F: FnMut(RwLockUpgradableReadGuard<'_, T>) -> I,
+    I: IntoFuture,
+{
+    type Item = <<I as IntoFuture>::Future as Future>::Item;
+    type Error = <<I as IntoFuture>::Future as Future>::Error;
+
+    fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
+        if let Some(ref mut future) = self.future {
+            // Use cached future
+            return future.poll();
+        }
+
+        match self.lock.as_ref().try_upgradable_read() {
+            Some(upgradable_lock) => {
+                // Cache resulting future to avoid executing the inner function again
+                let mut future = (self.inner)(upgradable_lock).into_future();
+                let res = future.poll();
+                self.future = Some(future);
+                res
+            },
+            None => {
+                // Notify current Task we can be polled again
+                task::current().notify();
+                Ok(Async::NotReady)
+            },
+        }
+    }
+}
+
+/// Trait to permit FutureUpgradableRead implementation on wrapped RwLock (not RwLock itself)
+pub trait FutureUpgradableReadable<R: AsRef<RwLock<T>>, T, I: IntoFuture> {
+    /// Takes a closure that will be executed when the Futures gains the read-lock
+    fn future_read<F: FnMut(RwLockUpgradableReadGuard<'_, T>) -> I>(&self, func: F) -> FutureUpgradableRead<R, T, F, I>;
+}
+
+impl<R: AsRef<RwLock<T>>, T, I: IntoFuture> FutureUpgradableReadable<R, T, I> for R {
+    fn future_read<F: FnMut(RwLockUpgradableReadGuard<'_, T>) -> I>(&self, func: F) -> FutureUpgradableRead<R, T, F, I> {
+        FutureUpgradableRead::new(self, func)
     }
 }
 
