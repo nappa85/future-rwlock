@@ -59,7 +59,7 @@ where
         match self.lock.as_ref().try_read() {
             Some(read_lock) => {
                 // Cache resulting future to avoid executing the inner function again
-                let mut future = (self.inner.take().unwrap())(read_lock).into_future();
+                let mut future = (self.inner.take().expect("Can't poll on FutureRead more than once"))(read_lock).into_future();
                 let res = future.poll();
                 self.future = Some(future);
                 res
@@ -132,7 +132,7 @@ where
         match self.lock.as_ref().try_upgradable_read() {
             Some(upgradable_lock) => {
                 // Cache resulting future to avoid executing the inner function again
-                let mut future = (self.inner.take().unwrap())(upgradable_lock).into_future();
+                let mut future = (self.inner.take().expect("Can't poll on FutureUpgradableRead more than once"))(upgradable_lock).into_future();
                 let res = future.poll();
                 self.future = Some(future);
                 res
@@ -205,7 +205,7 @@ where
         match self.lock.as_ref().try_write() {
             Some(write_lock) => {
                 // Cache resulting future to avoid executing the inner function again
-                let mut future = (self.inner.take().unwrap())(write_lock).into_future();
+                let mut future = (self.inner.take().expect("Can't poll on FutureWrite more than once"))(write_lock).into_future();
                 let res = future.poll();
                 self.future = Some(future);
                 res
