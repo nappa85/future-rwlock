@@ -239,26 +239,26 @@ mod tests {
     use tokio::runtime::current_thread;
     use tokio::prelude::{Future, future::lazy};
 
-    use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+    use parking_lot::RwLock;
 
     use super::{FutureReadable, FutureWriteable};
 
     use lazy_static::lazy_static;
 
     lazy_static! {
-        static ref LOCK: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
+        static ref LOCK1: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
+        static ref LOCK2: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
         static ref CONCURRENT_LOCK: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
     }
 
     #[test]
     fn current_thread_lazy_static() {
-        current_thread::block_on_all(LOCK.future_write(|mut v: RwLockWriteGuard<'_, Vec<String>>| {
+        current_thread::block_on_all(LOCK1.future_write(|mut v| -> Result<(), ()> {
             v.push(String::from("It works!"));
             Ok(())
         })
-        .and_then(|_| LOCK.future_read(|v: RwLockReadGuard<'_, Vec<String>>| -> Result<(), ()> {
-                // since we are using the same lazy_static as multithread_lazy_static
-                assert!((v.len() == 1 && v[0] == "It works!") || (v.len() == 2 && v[0] == "It works!" && v[1] == "It works!"));
+        .and_then(|_| LOCK1.future_read(|v| {
+                assert!(v.len() == 1 && v[0] == "It works!");
                 Ok(())
         }))).unwrap();
     }
@@ -266,11 +266,11 @@ mod tests {
     #[test]
     fn current_thread_local_arc() {
         let lock = Arc::new(RwLock::new(Vec::new()));
-        current_thread::block_on_all(lock.future_write(|mut v: RwLockWriteGuard<'_, Vec<String>>| {
+        current_thread::block_on_all(lock.future_write(|mut v| -> Result<(), ()> {
             v.push(String::from("It works!"));
             Ok(())
         })
-        .and_then(|_| lock.future_read(|v: RwLockReadGuard<'_, Vec<String>>| -> Result<(), ()> {
+        .and_then(|_| lock.future_read(|v| {
                 assert!(v.len() == 1 && v[0] == "It works!");
                 Ok(())
         }))).unwrap();
@@ -279,11 +279,11 @@ mod tests {
     #[test]
     fn current_thread_local_rc() {
         let lock = Rc::new(RwLock::new(Vec::new()));
-        current_thread::block_on_all(lock.future_write(|mut v: RwLockWriteGuard<'_, Vec<String>>| {
+        current_thread::block_on_all(lock.future_write(|mut v| -> Result<(), ()> {
             v.push(String::from("It works!"));
             Ok(())
         })
-        .and_then(|_| lock.future_read(|v: RwLockReadGuard<'_, Vec<String>>| -> Result<(), ()> {
+        .and_then(|_| lock.future_read(|v| {
                 assert!(v.len() == 1 && v[0] == "It works!");
                 Ok(())
         }))).unwrap();
@@ -292,11 +292,11 @@ mod tests {
     #[test]
     fn current_thread_local_box() {
         let lock = Box::new(RwLock::new(Vec::new()));
-        current_thread::block_on_all(lock.future_write(|mut v: RwLockWriteGuard<'_, Vec<String>>| {
+        current_thread::block_on_all(lock.future_write(|mut v| -> Result<(), ()> {
             v.push(String::from("It works!"));
             Ok(())
         })
-        .and_then(|_| lock.future_read(|v: RwLockReadGuard<'_, Vec<String>>| -> Result<(), ()> {
+        .and_then(|_| lock.future_read(|v| {
                 assert!(v.len() == 1 && v[0] == "It works!");
                 Ok(())
         }))).unwrap();
@@ -304,13 +304,12 @@ mod tests {
 
     #[test]
     fn multithread_lazy_static() {
-        tokio::run(LOCK.future_write(|mut v: RwLockWriteGuard<'_, Vec<String>>| {
+        tokio::run(LOCK2.future_write(|mut v| -> Result<(), ()> {
             v.push(String::from("It works!"));
             Ok(())
         })
-        .and_then(|_| LOCK.future_read(|v: RwLockReadGuard<'_, Vec<String>>| -> Result<(), ()> {
-                // since we are using the same lazy_static as multithread_lazy_static
-                assert!((v.len() == 1 && v[0] == "It works!") || (v.len() == 2 && v[0] == "It works!" && v[1] == "It works!"));
+        .and_then(|_| LOCK2.future_read(|v| {
+                assert!(v.len() == 1 && v[0] == "It works!");
                 Ok(())
         })));
     }
@@ -319,9 +318,9 @@ mod tests {
     // #[test]
     // fn multithread_local_arc() {
     //     let lock = Arc::new(RwLock::new(Vec::new()));
-    //     tokio::run(lock.future_write(|mut v: RwLockWriteGuard<'_, Vec<String>>| {
+    //     tokio::run(lock.future_write(|mut v| {
     //         &v.push(String::from("It works!"));
-    //         lock.future_read(|v: RwLockReadGuard<'_, Vec<String>>| -> Result<(), ()> {
+    //         lock.future_read(|v| {
     //             assert!(v.len() == 1 && v[0] == "It works!");
     //             Ok(())
     //         })
@@ -332,9 +331,9 @@ mod tests {
     // #[test]
     // fn multithread_local_rc() {
     //     let lock = Rc::new(RwLock::new(Vec::new()));
-    //     tokio::run(lock.future_write(|mut v: RwLockWriteGuard<'_, Vec<String>>| {
+    //     tokio::run(lock.future_write(|mut v| {
     //         &v.push(String::from("It works!"));
-    //         lock.future_read(|v: RwLockReadGuard<'_, Vec<String>>| -> Result<(), ()> {
+    //         lock.future_read(|v| {
     //             assert!(v.len() == 1 && v[0] == "It works!");
     //             Ok(())
     //         })
@@ -345,9 +344,9 @@ mod tests {
     // #[test]
     // fn multithread_local_box() {
     //     let lock = Box::new(RwLock::new(Vec::new()));
-    //     tokio::run(lock.future_write(|mut v: RwLockWriteGuard<'_, Vec<String>>| {
+    //     tokio::run(lock.future_write(|mut v| {
     //         &v.push(String::from("It works!"));
-    //         lock.future_read(|v: RwLockReadGuard<'_, Vec<String>>| -> Result<(), ()> {
+    //         lock.future_read(|v| {
     //             assert!(v.len() == 1 && v[0] == "It works!");
     //             Ok(())
     //         })
@@ -359,9 +358,9 @@ mod tests {
         tokio::run(lazy(|| {
             // spawn 10 concurrent futures
             for i in 0..100 {
-                tokio::spawn(CONCURRENT_LOCK.future_write(move |mut v: RwLockWriteGuard<'_, Vec<String>>| {
+                tokio::spawn(CONCURRENT_LOCK.future_write(move |mut v| {
                     v.push(format!("{}", i));
-                    CONCURRENT_LOCK.future_read(|v: RwLockReadGuard<'_, Vec<String>>| -> Result<(), ()> {
+                    CONCURRENT_LOCK.future_read(|v| {
                         println!("{:?}", v);
                         Ok(())
                     })
